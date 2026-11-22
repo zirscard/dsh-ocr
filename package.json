@@ -1,7 +1,8 @@
 {
   "name": "dsh-ocr",
-  "version": "0.3.0",
-  "description": "Registers two tools for DeepSeek Harness. doc_ocr turns scanned PDFs and images into structured text (per-page text, financial tables with a balance-sheet tie-out check, contract-clause hits) via a local RapidOCR engine or a Zhipu GLM-OCR cloud engine. doc_preprocess turns a directory of raw files into an Obsidian-ready knowledge base through a seven-stage pipeline with backend routing and sha256-based incremental skipping.",
+  "version": "0.5.0",
+  "private": true,
+  "description": "OCR 文档识别 + 知识库文件预处理插件：agent 工具 doc_ocr（扫描件 PDF/图片 → text/table/clause）与 doc_preprocess（7 阶段管线：discover → classify → extract → clean → structure → output → verify，含后端路由与 sha256 增量；输出 Obsidian markdown + JSON）。引擎为 RapidOCR（PP-OCRv6 ONNX）。0.5.0 起：表格抽取支持**几何重建**（列数自适应、不切碎数字）与**文本层坐标**（born-digital PDF 零 OCR 成本），路由决策由代码判定并带可审计依据。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -13,9 +14,7 @@
     "runner.js",
     "core/",
     "cordis.patch.yml",
-    "README.md",
-    "LICENSE",
-    "requirements.txt"
+    "README.md"
   ],
   "dsh": {
     "bundle": {
@@ -25,24 +24,5 @@
   "license": "MIT",
   "engines": {
     "node": ">=22"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/zirscard/dsh-ocr.git"
-  },
-  "homepage": "https://github.com/zirscard/dsh-ocr#readme",
-  "bugs": {
-    "url": "https://github.com/zirscard/dsh-ocr/issues"
-  },
-  "keywords": [
-    "dsh",
-    "dsh-plugin",
-    "ocr",
-    "pdf",
-    "rapidocr",
-    "paddleocr",
-    "glm-ocr",
-    "knowledge-base",
-    "obsidian"
-  ]
+  }
 }

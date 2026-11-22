@@ -9,7 +9,7 @@
 输入：单个文件或目录
 输出：Obsidian-flavored markdown（YAML frontmatter）+ JSON + 附件
 
-设计来源（对标 obsidian-import / foldmark / mineru-to-obsidian / text-extractor / vaultkeeper 等开源管线）：
+设计来源（见 research/obsidian-preprocessing/研究报告.md）：
   · obsidian-import：后端路由 + discover/extract/format/output 管线 + frontmatter 溯源
   · foldmark：OCR 懒触发（无文本层才 OCR）+ 单文件失败不中断
   · mineru-to-obsidian：按场景选提取器
@@ -134,8 +134,19 @@ def extract_text_pdf(path):
             "backend": "pypdf", "confidence": None}
 
 
-def extract_scanned_pdf(path, engine, dpi=200):
+def extract_scanned_pdf(path, engine, dpi=200, tier="standard"):
+    """扫描件抽取。tier 分档（吸收 MinerU 4.0 的 flash/basic/standard/advanced 思想）：
+
+      · flash    —— dpi 120、只出整页文本（不切条、不做行级）：目录/预览/批量初筛，最快
+      · standard —— dpi 200（默认）：整页文本 + 行级坐标；财务页另行 table 模式
+      · deep     —— dpi 300：关键页（表格/盖章/勾稽不过）用，出图更清晰
+    """
     import pypdfium2 as pdfium
+    tier = (tier or "standard").lower()
+    if tier == "flash":
+        dpi = min(dpi, 120)
+    elif tier == "deep":
+        dpi = max(dpi, 300)
     pdf = pdfium.PdfDocument(path)
     pages = []
     confs = []
@@ -148,22 +159,8 @@ def extract_scanned_pdf(path, engine, dpi=200):
             confs.append(sum(l["conf"] for l in lines) / len(lines))
     pdf.close()
     return {"kind": "scanned_pdf", "pages": pages, "page_count": len(pages),
-            "backend": "rapidocr", "confidence": round(sum(confs) / len(confs), 3) if confs else None}
-
-
-def extract_glm(path, kind):
-    """engine=glm：智谱 GLM-OCR 云端解析（PDF 原生整档 / 图片 base64，输出原生 Markdown）。"""
-    import zhipu_ocr
-    text, usage = zhipu_ocr.glm_ocr_file(path)
-    page_count = 1
-    if kind == "scanned_pdf":
-        try:
-            import pypdfium2 as pdfium
-            page_count = len(pdfium.PdfDocument(path))
-        except Exception:
-            page_count = 1
-    return {"kind": kind, "pages": [{"page": 1, "text": text}], "page_count": page_count,
-            "backend": "glm-ocr", "confidence": None, "usage": usage}
+            "backend": "rapidocr", "tier": tier, "dpi": dpi,
+            "confidence": round(sum(confs) / len(confs), 3) if confs else None}
 
 
 def extract_image(path, engine):
@@ -254,16 +251,12 @@ def extract_text(path):
             "backend": "text", "confidence": None}
 
 
-def extract(path, kind, engine, dpi=200, ocr_backend="local"):
+def extract(path, kind, engine, dpi=200, tier="standard"):
     if kind == "text_pdf":
         return extract_text_pdf(path)
     if kind == "scanned_pdf":
-        if ocr_backend == "glm":
-            return extract_glm(path, kind)
-        return extract_scanned_pdf(path, engine, dpi)
+        return extract_scanned_pdf(path, engine, dpi, tier=tier)
     if kind == "image":
-        if ocr_backend == "glm":
-            return extract_glm(path, kind)
         return extract_image(path, engine)
     if kind == "docx":
         return extract_docx(path)
@@ -444,9 +437,10 @@ def main():
     ap.add_argument("--mode", default="all", choices=["all", "classify", "discover"])
     ap.add_argument("--max-files", type=int, default=200)
     ap.add_argument("--dpi", type=int, default=200)
+    ap.add_argument("--tier", default="standard", choices=["flash", "standard", "deep"],
+                    help="扫描件质量档（吸收 MinerU 4.0 分档思想）：flash=快速初筛 / "
+                         "standard=默认 / deep=关键页高质")
     ap.add_argument("--force", action="store_true", help="忽略缓存，全部重跑")
-    ap.add_argument("--engine", default="local", choices=["local", "glm"],
-                    help="扫描件/图片的 OCR 后端：local=本机 RapidOCR（默认）；glm=智谱 GLM-OCR 云端")
     args = ap.parse_args()
 
     t0 = time.time()
@@ -486,12 +480,12 @@ def main():
                 result["skipped"].append(path)
                 continue
 
-            if engine is None and args.engine == "local":
+            if engine is None:
                 engine = load_engine("ch")
 
             rec = {"path": path, "sha256": digest, "kind": kind,
                    "extracted_at": datetime.now().isoformat(timespec="seconds")}
-            rec["extracted"] = extract(path, kind, engine, args.dpi, ocr_backend=args.engine)
+            rec["extracted"] = extract(path, kind, engine, args.dpi, tier=args.tier)
             clean(rec["extracted"])
             md_path, json_path = output(rec, out_dir)
             problems = verify(rec, md_path)

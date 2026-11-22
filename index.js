@@ -5,12 +5,12 @@
  * tells the agent when and how to use it. The tool deterministically turns a
  * scanned PDF / image into structured text — plain page text, financial-table
  * rows with a balance-sheet 勾稽 self-check, or contract-clause hits — so that
- * downstream data pipelines can consume the text layer
+ * downstream modules (M1 financial data, M3 anchors) can consume the text layer
  * of documents that have none. All heavy lifting lives in the bundled Python
  * engine (core/ocr.py, RapidOCR = PaddleOCR PP-OCRv4 ONNX); runner.js locates an
  * OCR-capable Python and normalizes its JSON.
  *
- * Keeps ZERO runtime npm dependencies (mirrors dsh-context-extract / dsh-office-audit).
+ * Keeps ZERO runtime npm dependencies (mirrors dsh-audit-extract / dsh-office-audit).
  *
  * @module dsh-ocr
  */
@@ -158,7 +158,7 @@ function renderOcr(_args, value) {
       for (const b of t.balance_checks ?? []) {
         lines.push(`> 勾稽 col${b.col}: 资产总计 ${fmt(b.assets_total)} vs 负债+权益 ${fmt(b.liab_plus_equity)} → ${b.balanced ? '✓ 平衡' : '✗ 差 ' + b.diff}`)
       }
-    } else if (mode === 'clause') {
+    } else if (mode === 'clause' || mode === 'legal' || mode === 'strategy') {
       // clauses are emitted once, after the loop
     } else {
       lines.push(`\n## 第 ${p.page} 页（${p.lines} 行 · conf ${p.avg_conf}）`)
@@ -168,8 +168,8 @@ function renderOcr(_args, value) {
     }
   }
 
-  if (mode === 'clause' && Array.isArray(value.clauses) && value.clauses.length > 0) {
-    lines.push('\n## 条款命中')
+  if ((mode === 'clause' || mode === 'legal' || mode === 'strategy') && Array.isArray(value.clauses) && value.clauses.length > 0) {
+    lines.push('\n## 扫描命中')
     for (const c of value.clauses) {
       lines.push(`- **${c.clause_type}**（${c.page_count_hit} 页，首页 p${c.first_page}）：${(c.quotes?.[0] ?? '').slice(0, 120)}`)
     }
@@ -214,7 +214,7 @@ function renderPreprocess(_args, value) {
 
 const PROMPT_SECTION = `## OCR 文档识别（doc_ocr）
 
-当材料里出现**扫描件 PDF（无文本层）或图片**（财务尽调报告、审计报告、盖章协议、招股书、表格截图），无法用 pypdf 直接抽文本时，先调 doc_ocr 把它变成可读文本，再交给下游数据处理流程。
+当项目材料里出现**扫描件 PDF（无文本层）或图片**（财务尽调报告、审计报告、盖章协议、招股书、表格截图），无法用 pypdf 直接抽文本时，先调 doc_ocr 把它变成可读文本，再交给下游 M1–M4 处理。
 
 - 参数 path：文件路径（.pdf / .png / .jpg …；PDF 会逐页渲染成图再识别）。
 - 参数 mode：text（整页文本，最通用）/ table（财务报表：自动定位数值列 + 列切条 + 数字清洗 + BS 平衡勾稽）/ clause（合同条款：回购/对赌/反稀释/优先清算…关键词命中）。
@@ -227,7 +227,11 @@ const PROMPT_SECTION = `## OCR 文档识别（doc_ocr）
 2. table 模式只给「能被勾稽验证」的数；勾稽不平的标出来交人工核对，不硬凑。
 3. OCR 数字有逗号/句点混淆（52,163 vs 52.163），按千分位规则归一，保留原始文本可复核。
 4. 条款抽取只给「条款类型 + 页码 + 引用」，不照抄长段落；回购/对赌窗口要看是否已过期。
-5. 引擎选择（engine）：默认 local（本机 RapidOCR，免费离线）；engine="glm" 用智谱 GLM-OCR 云端——复杂表格/公式/盖章协议、版式复杂的扫描件优先 glm（原生 Markdown 输出），需要 ZHIPU_API_KEY、按 token 计费；glm 的 table 模式同样跑「资产=负债+权益」勾稽。
+5. legal 模式扫法律尽调关注点（陈述保证/违约/争议解决/期限窗口/程序审批/交叉引用/签署授权/合规资质）；strategy 模式扫战略报告要素（市场规模/增长预测/竞争格局/客户订单/技术研发/里程碑/风险/政策）——两者产出与 clause 同构（类型+页码+引用），可直接进 workpaper 索引拿 P/T/R/C 地址。
+6. 关键词命中 ≠ 结论：命中只是「此处提到」，尽调判断仍需人工核对原文；命中为 0 时如实说「未命中」，不要反推「不存在」。
+7. **离线优先（成本控制，2026-11-01 起 DeepSeek 搜索计费）**：OCR 相关的引擎/模型/版本/API 知识**一律先查本地缓存** research/ocr/references/offline-knowledge.md（含 PP-OCRv5/v6、MiniCPM-OCR/Jev、dots.mocr、DeepSeek-OCR、MinerU 4.0、GLM-OCR 的实测数据与本机可用 API 事实），**不要为「确认一下最新版本」发起联网搜索**。确需外部信息时只走免费路径（api.github.com 读仓库 README、本地包源码、已有 .ocr 产物）；本地无此数据就直接说「本机无此数据」，不要花钱搜。涉及云 OCR 付费接口必须先向用户确认 Key 与预算。
+8. **OCR 管线零联网**（已审计）：ocr.py / pipeline.py / workpaper.py / runner.js 均无 HTTP、web_search、chat-completions 调用，推理全在本地 ONNX。core/jev.py 默认**只读本地权重缓存**（DSH_JEV_ALLOW_DOWNLOAD 未开即不联网下载），缺权重返回 jev_unavailable。**OCR 任务不产生任何搜索费用**，无需为跑 OCR 去开搜索通道。计费机制与免费路径白名单见 research/ocr/references/cost-policy-2026-11.md。
+9. **加速已内建（2026-10-29 实测，勿重复调参）**：onnxruntime intra_op=6 / inter_op=1 → 单页 2.65s（比原 2 线程快 2.4×，输出完全一致）；线程数由 runner 按**实际并发度**自适应（DSH_OCR_CONCURRENCY），并发 ≥2 时自动降回 2 线程防超卖。**CoreML EP 实测更慢**（7.56s vs CPU 2.84s，PP-OCRv6 动态 shape 无法静态绑 ANE），不要开。Jev 走 **PyTorch MPS**（DSH_JEV_DEVICE=auto 默认）：整页 19 秒（原 ~20 分钟，~60×），小区域 1.1s；causal-conv1d 与 flash-linear-attention 在 macOS arm64 **装不了**（CUDA/triton 限制），不要再尝试。Jev 是**区域级**模型：整页喂会失去区分度（good/bad 都塌到 0.002），须用 --regions 先裁表格区段。详见 research/ocr/references/operator-acceleration-2026-10-29.md。
 
 ## 知识库文件预处理（doc_preprocess）
 
@@ -256,26 +260,17 @@ export function apply(ctx) {
 
   disposers.push(ctx.tools.register(defineTool({
     name: 'doc_ocr',
-    description: 'OCR a scanned PDF or image (no text layer) into structured text. Modes: text (per-page text + confidence), table (financial tables: auto-detect numeric columns, column-slice re-OCR, number cleaning, balance-sheet 勾稽 self-check), clause (contract clause keyword hits with page + quote). Engines: local = RapidOCR running PaddleOCR PP-OCRv4 ONNX (default, free, offline); glm = Zhipu GLM-OCR cloud (0.9B, OmniDocBench SOTA, native Markdown output, strong at complex tables/formulas/seals, PDF ≤50MB/100 pages, needs ZHIPU_API_KEY). Read-only; never modifies the source. For complex table-structure / layout parsing offline, the upgrade reference is PaddleOCR PP-Structure (paddleocr-doc-parsing).',
+    description: 'OCR a scanned PDF or image (no text layer) into structured text. Modes: text (per-page text + confidence), table (financial tables: auto-detect numeric columns, column-slice re-OCR, number cleaning, balance-sheet 勾稽 self-check), clause (deal-term keyword hits), legal (legal-DD keyword scan: warranties/breach/dispute resolution/deadlines/approvals/cross-references/signatures), strategy (strategy-report keyword scan: market size/growth/competition/customers/technology/milestones/risks). All scan modes return hits with page + quote. Engine: RapidOCR running PaddleOCR PP-OCRv4 ONNX models. Read-only; never modifies the source. For complex table-structure / layout parsing, the upgrade reference is PaddleOCR PP-Structure (paddleocr-doc-parsing).',
     parameters: {
       path: {
         type: 'string',
         required: true,
-        description: 'Input file path (.pdf / .png / .jpg / .bmp / .webp / .tif). Absolute, or relative to the session working directory. engine=glm additionally accepts native whole-PDF upload.',
+        description: 'Input file path (.pdf / .png / .jpg / .bmp / .webp / .tif). Absolute, or relative to the session working directory.',
       },
       mode: {
         type: 'string',
-        enum: ['text', 'table', 'clause'],
-        description: 'OCR mode. text = whole-page text (default). table = financial table extraction with column slicing + balance-sheet 勾稽. clause = contract clause keyword extraction.',
-      },
-      engine: {
-        type: 'string',
-        enum: ['local', 'glm'],
-        description: 'OCR engine. local = RapidOCR PP-OCRv4 ONNX on this machine (default; free, offline). glm = Zhipu GLM-OCR cloud (native Markdown incl. tables/formulas/seals; PDF native whole-doc ≤50MB/100p, image ≤10MB; requires ZHIPU_API_KEY; billed per token).',
-      },
-      glmPrompt: {
-        type: 'string',
-        description: 'engine=glm only: optional extra prompt appended to the parse request.',
+        enum: ['text', 'table', 'clause', 'legal', 'strategy'],
+        description: 'OCR mode. text = whole-page text (default). table = financial table extraction with column slicing + balance-sheet 勾稽. clause = deal-term keyword scan (回购/对赌/反稀释...). legal = legal-DD keyword scan (陈述保证/违约/争议解决/期限窗口/程序审批/交叉引用/签署授权...). strategy = strategy-report keyword scan (市场规模/增长预测/竞争格局/客户订单/技术研发/里程碑/风险...).',
       },
       pages: {
         type: 'string',
@@ -307,8 +302,6 @@ export function apply(ctx) {
         pages: args.pages,
         dpi: args.dpi,
         lang: args.lang,
-        engine: args.engine,
-        glmPrompt: args.glmPrompt,
         outputDir,
         engineRoot: HERE,
       })
@@ -317,17 +310,12 @@ export function apply(ctx) {
 
   disposers.push(ctx.tools.register(defineTool({
     name: 'doc_preprocess',
-    description: 'Preprocess a file or directory into Obsidian-ready Markdown + JSON through a 7-stage pipeline: discover → classify → extract (backend routing: pypdf for text PDFs, RapidOCR or Zhipu GLM-OCR cloud for scanned PDFs/images, python-docx/python-pptx/openpyxl for Office) → clean → structure → output (YAML frontmatter + JSON) → verify, with sha256-based incremental skip. Read-only on sources; writes .md/.json/cache.json under outputDir.',
+    description: 'Preprocess a file or directory into Obsidian-ready Markdown + JSON through a 7-stage pipeline: discover → classify → extract (backend routing: pypdf for text PDFs, RapidOCR for scanned PDFs/images, python-docx/python-pptx/openpyxl for Office) → clean → structure → output (YAML frontmatter + JSON) → verify, with sha256-based incremental skip. Read-only on sources; writes .md/.json/cache.json under outputDir.',
     parameters: {
       path: {
         type: 'string',
         required: true,
         description: 'Input file or directory to preprocess. Absolute, or relative to the session working directory.',
-      },
-      engine: {
-        type: 'string',
-        enum: ['local', 'glm'],
-        description: 'OCR backend for scanned PDFs / images. local = RapidOCR (default, free, offline). glm = Zhipu GLM-OCR cloud (native Markdown, strong at tables/seals; needs ZHIPU_API_KEY; billed).',
       },
       outputDir: {
         type: 'string',
@@ -346,6 +334,11 @@ export function apply(ctx) {
         type: 'integer',
         description: 'Cap the number of files processed in one run (default 200).',
       },
+      tier: {
+        type: 'string',
+        enum: ['flash', 'standard', 'deep'],
+        description: 'Scan quality tier (MinerU-style): flash = fast triage (dpi 120, text only), standard = default, deep = high-fidelity key pages (dpi 300).',
+      },
       force: {
         type: 'boolean',
         description: 'Ignore the sha256 cache and reprocess every file (default false).',
@@ -363,8 +356,8 @@ export function apply(ctx) {
         mode: args.mode,
         dpi: args.dpi,
         maxFiles: args.maxFiles,
+        tier: args.tier,
         force: args.force === true,
-        ocrEngine: args.engine,
         engineRoot: HERE,
       })
     },

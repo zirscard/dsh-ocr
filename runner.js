@@ -129,7 +129,10 @@ function exec(command, args, options = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
-      env: { ...process.env, ...(options.env ?? {}) },
+      // DSH_OCR_CONCURRENCY：当前**实际在跑**的 OCR 进程数（不是上限）。
+      // core/ocr.py 用它决定每进程 onnx 线程数：单跑 6 线程（实测快 2.2×），
+      // 并发时 2 线程/进程防 CPU 超卖。
+      env: { ...process.env, DSH_OCR_CONCURRENCY: String(activeProcs), ...(options.env ?? {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let stdout = ''
@@ -209,11 +212,9 @@ export async function runOcr(options) {
     '--pages', normalizePages(options.pages),
     '--dpi', String(options.dpi ?? (mode === 'table' ? 300 : 200)),
     '--lang', options.lang ?? 'ch',
-    '--engine', options.engine ?? 'local',
     '--out-json', jsonPath,
     '--out-md', mdPath,
   ]
-  if (options.glmPrompt) args.push('--glm-prompt', String(options.glmPrompt))
 
   const candidates = findOcrPythonCandidates()
   const tried = []
@@ -309,8 +310,8 @@ export async function runPreprocess(options) {
     '--mode', mode,
     '--dpi', String(options.dpi ?? 200),
     '--max-files', String(options.maxFiles ?? 200),
-    '--engine', options.ocrEngine ?? 'local',
   ]
+  if (options.tier) args.push('--tier', String(options.tier))
   if (options.force) args.push('--force')
 
   const candidates = findOcrPythonCandidates()
