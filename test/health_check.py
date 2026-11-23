@@ -51,7 +51,7 @@ def _make_smoke_png(path):
     if font is None:
         font = ImageFont.load_default()
     img = Image.new("RGB", (900, 160), "white")
-    ImageDraw.Draw(img).text((30, 40), "合计金额 52,163 元", fill="black", font=font)
+    ImageDraw.Draw(img).text((30, 40), "合计金额 12,345 元", fill="black", font=font)
     img.save(path)
     return True
 
@@ -126,7 +126,7 @@ def main():
             p = d["pages"][0]
             check("引擎 ok", d.get("ok") is True)
             check("conf ≥ 0.9", (p.get("avg_conf") or 0) >= 0.9, "conf=%s" % p.get("avg_conf"))
-            check("读到已知文本", "52,163" in (p.get("text") or "") or "52163" in (p.get("text") or ""),
+            check("读到已知文本", "12,345" in (p.get("text") or "") or "12345" in (p.get("text") or ""),
                   (p.get("text") or "")[:40])
         except Exception:                          # noqa: BLE001
             check("引擎 ok", False, (r.stdout + r.stderr)[-160:] if 'r' in dir() else "")

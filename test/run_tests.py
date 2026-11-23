@@ -67,10 +67,10 @@ def _font(size=40):
 def main():
     # ── A. 纯函数 ────────────────────────────────────────────────────────
     print("# A. 数字清洗 / 页码解析（纯函数）")
-    check("千分位逗号 52,163", ocr.clean_number("52,163") == 52163.0,
-          str(ocr.clean_number("52,163")))
-    check("句点当千分位 52.163", ocr.clean_number("52.163") == 52163.0,
-          str(ocr.clean_number("52.163")))
+    check("千分位逗号 12,345", ocr.clean_number("12,345") == 12345.0,
+          str(ocr.clean_number("12,345")))
+    check("句点当千分位 12.345", ocr.clean_number("12.345") == 12345.0,
+          str(ocr.clean_number("12.345")))
     check("括号负数 (1,234)", ocr.clean_number("(1,234)") == -1234.0,
           str(ocr.clean_number("(1,234)")))
     check("小数保留 3.14", abs(ocr.clean_number("3.14") - 3.14) < 1e-9,
@@ -85,13 +85,13 @@ def main():
     try:
         from PIL import Image, ImageDraw
         img = Image.new("RGB", (1100, 160), "white")
-        ImageDraw.Draw(img).text((30, 40), "合计金额 52,163 元", fill="black", font=_font(44))
+        ImageDraw.Draw(img).text((30, 40), "合计金额 12,345 元", fill="black", font=_font(44))
         lines = ocr.run_page(engine, img)
         txt = ocr.page_text(lines)
         conf = round(sum(l["conf"] for l in lines) / len(lines), 3) if lines else 0.0
         check("合成图有识别行", len(lines) > 0, "%d 行" % len(lines))
         check("命中「合计」", "合计" in txt, txt[:40])
-        check("命中 52,163 或 52163", "52,163" in txt or "52163" in txt, txt[:60])
+        check("命中 12,345 或 12345", "12,345" in txt or "12345" in txt, txt[:60])
         check("平均置信度 ≥ 0.9", conf >= 0.9, "conf=%s" % conf)
     except Exception as e:                          # noqa: BLE001
         check("合成图 text 测试", False, "异常: %s" % e)

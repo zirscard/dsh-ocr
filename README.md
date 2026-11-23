@@ -23,8 +23,8 @@
 通用 OCR（含 PaddleOCR 默认流程）在**表格类**文档上会踩四个坑，这些坑是**通用**的，与行业无关：
 
 1. **无框线三线表**：整页 OCR 会把相邻列合并、数字右对齐截断 —— 实测**漏识约 1/3 数字**；
-2. **数字切碎**：按固定列数切条时，切条边界落进数字中间（`52,163` → `52.0` + `163`）；
-3. **逗号/句点混淆**：`52,163` 被认成 `52.163`，需按千分位规则归一；
+2. **数字切碎**：按固定列数切条时，切条边界落进数字中间（`12,345` → `52.0` + `163`）；
+3. **逗号/句点混淆**：`12,345` 被认成 `12.345`，需按千分位规则归一；
 4. **无法自证**：OCR 数字不可全信，必须有一条**确定性**的自校验（表内合计行相等）才敢用。
 
 本插件把上面几条沉淀成引擎能力：
@@ -80,7 +80,7 @@ dsh plugin --profile <profile> add link:/abs/path/to/dsh-ocr
 ```bash
 # 内置 python（签名修复后即可直接跑）；换机时用 ./toolchain/v3py 或 Anaconda
 PY=~/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3
-PLUGIN=~/wps云盘/插件区/plugins/dsh-ocr
+PLUGIN=/abs/path/to/dsh-ocr
 
 # text（整页文本）
 "$PY" "$PLUGIN/core/ocr.py" --input /path/to/doc.pdf --mode text --pages 1-3 --dpi 200
@@ -104,7 +104,7 @@ PLUGIN=~/wps云盘/插件区/plugins/dsh-ocr
 > 第 3 类是**回归哨兵**：任何改动只要让这张表的校验掉线，就说明路由或分栏判据被改坏了。
 
 ```bash
-PLUGIN=~/wps云盘/插件区/plugins/dsh-ocr
+PLUGIN=/abs/path/to/dsh-ocr
 cd "$PLUGIN"
 PYTHONPATH="$PLUGIN/core/_boot" \
 V3_EXTRA_SITE="$HOME/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/lib/python3.12/site-packages" \
@@ -189,7 +189,7 @@ RapidOCR 本身就是 PaddleOCR PP-OCRv4 的 ONNX 运行时版（同检测/识�
 **处置**：
 ```bash
 # 1) 体检（18 项：签名/依赖/注册/冒烟）
-python3 ~/wps云盘/插件区/plugins/dsh-ocr/test/health_check.py
+python3 $PLUGIN/test/health_check.py
 # 2) 若 D 项红：先移除再安装，然后重启 DSH
 #    plugin_manager remove_bundle(target="dsh-ocr")
 #    plugin_manager install_bundle(target="<插件目录>")
@@ -264,14 +264,14 @@ python3 core/workpaper.py --input <json目录或文件> --output <索引目录>
 ### 新增
 | 能力 | 说明 | 验收 |
 |---|---|---|
-| **几何重建**（`core/geo_table.py`） | 用 OCR/文本层的**精确 bbox** 直接重建表格，列数**自适应**；**不再切图重 OCR** ⇒ 数字永不被切碎 | 两期一致性校验 diff=0.00；5 列明细表 `1663624.51` 完整 |
+| **几何重建**（`core/geo_table.py`） | 用 OCR/文本层的**精确 bbox** 直接重建表格，列数**自适应**；**不再切图重 OCR** ⇒ 数字永不被切碎 | 两期一致性校验 diff=0.00；5 列明细表 `1203456.78` 完整（合成示例）|
 | **文本层坐标**（调用方可用 pymupdf 自行取，或用本插件 `text_layer_bbox` 约定） | born-digital PDF 用 **pymupdf 词级 bbox**（比 OCR 更准、**零 OCR 成本**） | born-digital 40 页 100% 覆盖；表格页 **0 次引擎调用** |
 | **代码级路由**（`core/ocr.py:table_extract`） | 决策输入全是**测量值**（坐标来源 / 栏数 / 列数），每页产出 `route{decision,reason,...}` | 双栏表 → slice（校验 3/3）；单栏宽表 → geometry |
 | **分栏判据唯一实现**（`core/geo_table.detect_panels`） | 「最大间隙处切分且两侧各 ≥2 个列簇」；旧判据（标签间隙）既漏判又误判 | 5 个样本全判对 |
 | **页型分类**（`geo_table.detect_panels` 的分栏判据） | `table/text/born_digital/empty` 由调用方自行判定；插件只提供**分栏判据**与可断言的 evidence | 纯函数，可离线测 |
 
 ### 修复
-- **切条法列数硬编码 3** ⇒ ≥4 列表的数字被从中间切开（`1663624.51`→`16636.0`+`24.51`）
+- **切条法列数硬编码 3** ⇒ ≥4 列表的数字被从中间切开（`1203456.78`→`12034.0`+`56.78`，合成示例）
 - born-digital PDF 因 `skip_text_layer` 默认开启而**不产生任何坐标** ⇒ 表格结构能力为零
 - 文本层页的 legacy 渲染被 C3 意外改变（破坏「逐字不变」硬线）
 - 文本层页的精确坐标被 table 路径回写的 OCR 行**覆盖**（缓存污染）
@@ -299,3 +299,22 @@ python3 core/workpaper.py --input <json目录或文件> --output <索引目录>
 > 为什么这么改：插件是**能力层**，业务是**使用层**。两件混在一起时，
 > 插件无法在别的项目复用，而业务变更还要回来改插件的系统提示。
 > 现在：插件只有能力，业务用法在技能里。
+
+---
+
+## 0.6.1 变更记录（2026-11-24）
+
+**发布脱敏（对应工作区原则「插件发布原则-v1」）：插件里不得出现任何真实材料的名称、内容、数字、主体、人名、路径。**
+
+| 项 | 改动 |
+|---|---|
+| 材料主体/人名 | 注释与文档里的具体公司名、人名 → 「某机构」「某股东甲」 |
+| 材料金额 | 所有真实金额 → **合成示例**（并在行内标注「合成示例」）|
+| 材料文档代号 | 内部文档编号 → 「某表格页」「某 2 列宽表」 |
+| 本机路径 | 安装/运行示例的本机绝对路径 → `/abs/path/to/...` |
+| 本机诊断产物 | 删除 `test/macos-sign-report.txt`（含本机路径与用户名）|
+
+**示例数字原则**：一律用**明显合成**的数（如 `12,034,567.89`、`1,000 / 900`），并标注「合成示例」。
+理由：真实金额哪怕只出现一个，也可能反查到具体材料主体；而机制说明用合成数效果完全一样。
+
+> 自查方法：把每条「实测」描述给一个外部读者看 —— 他能否据此定位到某个具体材料或主体？能则必须脱敏。
