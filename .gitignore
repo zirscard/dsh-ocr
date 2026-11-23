@@ -7,3 +7,5 @@ test/tmp/
 .audit/
 _deps/
 sign/backup/
+test/macos-sign-report.txt
+test/.smoke.png

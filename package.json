@@ -1,8 +1,8 @@
 {
   "name": "dsh-ocr",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
-  "description": "OCR 文档识别 + 知识库文件预处理插件：agent 工具 doc_ocr（扫描件 PDF/图片 → text/table/clause）与 doc_preprocess（7 阶段管线：discover → classify → extract → clean → structure → output → verify，含后端路由与 sha256 增量；输出 Obsidian markdown + JSON）。引擎为 RapidOCR（PP-OCRv6 ONNX）。0.5.0 起：表格抽取支持**几何重建**（列数自适应、不切碎数字）与**文本层坐标**（born-digital PDF 零 OCR 成本），路由决策由代码判定并带可审计依据。",
+  "description": "通用文档扫描识别插件（domain-agnostic）：agent 工具 doc_ocr 把 PDF / 图片转成结构化内容（逐页文本 / 表格结构 / 条款与关键词命中），另有 doc_preprocess（7 阶段知识库预处理：discover → classify → extract → clean → structure → output → verify，含后端路由与 sha256 增量）。引擎 RapidOCR（PP-OCRv6 ONNX）全本地推理、零联网、零 API 费用。表格抽取支持几何重建（列数自适应、不切碎数字）与文本层坐标（born-digital PDF 零 OCR 成本），路由决策由代码判定并带可审计依据。",
   "type": "module",
   "main": "index.js",
   "exports": {

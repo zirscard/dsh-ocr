@@ -3,14 +3,19 @@
  *
  * Registers one agent tool, `doc_ocr`, plus a short system-prompt section that
  * tells the agent when and how to use it. The tool deterministically turns a
- * scanned PDF / image into structured text — plain page text, financial-table
- * rows with a balance-sheet 勾稽 self-check, or contract-clause hits — so that
- * downstream modules (M1 financial data, M3 anchors) can consume the text layer
- * of documents that have none. All heavy lifting lives in the bundled Python
- * engine (core/ocr.py, RapidOCR = PaddleOCR PP-OCRv4 ONNX); runner.js locates an
- * OCR-capable Python and normalizes its JSON.
+ * PDF / image into structured content — plain page text, table rows with a
+ * self-consistency check, or keyword hits for clause / legal / strategy scans.
  *
- * Keeps ZERO runtime npm dependencies (mirrors dsh-audit-extract / dsh-office-audit).
+ * **Domain-agnostic by design**: this plugin is a general-purpose document
+ * scanner. It never assumes what the document *is* (financial statement,
+ * contract, invoice, paper, form). Business-specific downstream steps belong to
+ * the caller's own skills/pipelines, not here.
+ *
+ * All heavy lifting lives in the bundled Python engine (core/ocr.py,
+ * RapidOCR = PaddleOCR PP-OCRv6 ONNX); runner.js locates an OCR-capable Python
+ * and normalizes its JSON.
+ *
+ * Keeps ZERO runtime npm dependencies: everything it needs is bundled under core/.
  *
  * @module dsh-ocr
  */
@@ -212,26 +217,25 @@ function renderPreprocess(_args, value) {
 /* plugin apply                                                        */
 /* ------------------------------------------------------------------ */
 
-const PROMPT_SECTION = `## OCR 文档识别（doc_ocr）
+const PROMPT_SECTION = `## 文档扫描识别（doc_ocr）
 
-当项目材料里出现**扫描件 PDF（无文本层）或图片**（财务尽调报告、审计报告、盖章协议、招股书、表格截图），无法用 pypdf 直接抽文本时，先调 doc_ocr 把它变成可读文本，再交给下游 M1–M4 处理。
+把**图片或扫描件 PDF（无文本层）**转成可被下游消费的结构化内容。通用文档扫描工具：不绑定任何业务领域，财务表、合同、票据、表单、论文、报告一视同仁。
 
-- 参数 path：文件路径（.pdf / .png / .jpg …；PDF 会逐页渲染成图再识别）。
-- 参数 mode：text（整页文本，最通用）/ table（财务报表：自动定位数值列 + 列切条 + 数字清洗 + BS 平衡勾稽）/ clause（合同条款：回购/对赌/反稀释/优先清算…关键词命中）。
-- 参数 pages：可选页范围，如 "all" / "1-10" / "34,37,42"；table 模式建议 dpi 300–400。
-- 引擎：RapidOCR（跑 PaddleOCR PP-OCRv4 的 ONNX 模型，中文精度实测 conf 0.95+）。
-- 输出：逐页文本 + 平均置信度 + 报告路径；table 模式额外给「资产总计 vs 负债+权益」勾稽结果。
+- 参数 path：文件路径（.pdf / .png / .jpg / .bmp / .webp / .tif）；PDF 逐页渲染成图后识别。
+- 参数 mode：\`text\`（整页文本，最通用）/ \`table\`（**表格结构**：数值列聚类 → 几何重建或切条重 OCR → 数字清洗 → 一致性校验）/ \`clause\`（条款关键词命中）/ \`legal\`（法律类文档关注点扫描）/ \`strategy\`（战略/行业类文档要素扫描）。
+- 参数 pages：页范围 "all" / "1-10" / "34,37,42"；dpi：text 默认 200，table 建议 300–400。
+- 引擎：RapidOCR（PaddleOCR PP-OCRv6 ONNX，本地推理、零联网、零 API 费用）。多语言：ch / en。
+- 输出：逐页文本 + 平均置信度 + JSON/Markdown 报告路径；\`table\` 模式额外给表格行、列名与一致性校验结果。
+- 每页可带 \`route\` 字段（走了哪条抽取路径 + 依据），用于复核。
 
 使用纪律：
-1. 扫描件/图片才调 OCR；有文本层的 PDF 先用 pypdf 直读，不要无谓 OCR。
-2. table 模式只给「能被勾稽验证」的数；勾稽不平的标出来交人工核对，不硬凑。
-3. OCR 数字有逗号/句点混淆（52,163 vs 52.163），按千分位规则归一，保留原始文本可复核。
-4. 条款抽取只给「条款类型 + 页码 + 引用」，不照抄长段落；回购/对赌窗口要看是否已过期。
-5. legal 模式扫法律尽调关注点（陈述保证/违约/争议解决/期限窗口/程序审批/交叉引用/签署授权/合规资质）；strategy 模式扫战略报告要素（市场规模/增长预测/竞争格局/客户订单/技术研发/里程碑/风险/政策）——两者产出与 clause 同构（类型+页码+引用），可直接进 workpaper 索引拿 P/T/R/C 地址。
-6. 关键词命中 ≠ 结论：命中只是「此处提到」，尽调判断仍需人工核对原文；命中为 0 时如实说「未命中」，不要反推「不存在」。
-7. **离线优先（成本控制，2026-11-01 起 DeepSeek 搜索计费）**：OCR 相关的引擎/模型/版本/API 知识**一律先查本地缓存** research/ocr/references/offline-knowledge.md（含 PP-OCRv5/v6、MiniCPM-OCR/Jev、dots.mocr、DeepSeek-OCR、MinerU 4.0、GLM-OCR 的实测数据与本机可用 API 事实），**不要为「确认一下最新版本」发起联网搜索**。确需外部信息时只走免费路径（api.github.com 读仓库 README、本地包源码、已有 .ocr 产物）；本地无此数据就直接说「本机无此数据」，不要花钱搜。涉及云 OCR 付费接口必须先向用户确认 Key 与预算。
-8. **OCR 管线零联网**（已审计）：ocr.py / pipeline.py / workpaper.py / runner.js 均无 HTTP、web_search、chat-completions 调用，推理全在本地 ONNX。core/jev.py 默认**只读本地权重缓存**（DSH_JEV_ALLOW_DOWNLOAD 未开即不联网下载），缺权重返回 jev_unavailable。**OCR 任务不产生任何搜索费用**，无需为跑 OCR 去开搜索通道。计费机制与免费路径白名单见 research/ocr/references/cost-policy-2026-11.md。
-9. **加速已内建（2026-10-29 实测，勿重复调参）**：onnxruntime intra_op=6 / inter_op=1 → 单页 2.65s（比原 2 线程快 2.4×，输出完全一致）；线程数由 runner 按**实际并发度**自适应（DSH_OCR_CONCURRENCY），并发 ≥2 时自动降回 2 线程防超卖。**CoreML EP 实测更慢**（7.56s vs CPU 2.84s，PP-OCRv6 动态 shape 无法静态绑 ANE），不要开。Jev 走 **PyTorch MPS**（DSH_JEV_DEVICE=auto 默认）：整页 19 秒（原 ~20 分钟，~60×），小区域 1.1s；causal-conv1d 与 flash-linear-attention 在 macOS arm64 **装不了**（CUDA/triton 限制），不要再尝试。Jev 是**区域级**模型：整页喂会失去区分度（good/bad 都塌到 0.002），须用 --regions 先裁表格区段。详见 research/ocr/references/operator-acceleration-2026-10-29.md。
+1. **先判有没有文本层**：有文本层的 PDF 优先直读（pymupdf，零 OCR 成本、字符更准），不要无谓 OCR；扫描件/图片才走 OCR。
+2. \`table\` 模式只给「能自校验」的数：校验不平的标出来交人工核对，**不硬凑、不猜**。
+3. OCR 数字有逗号/句点混淆（52,163 vs 52.163），按千分位规则归一，并保留原始文本可复核。
+4. 关键词类模式（clause / legal / strategy）只给「类型 + 页码 + 引用」，不照抄长段落。**命中 ≠ 结论**：命中只表示「此处提到」；命中为 0 时如实说「未命中」，不要反推「不存在」。
+5. **能力边界要如实说**：手写体、印章覆盖、严重倾斜、低分辨率扫描的识别率会明显下降；表格跨页、合并单元格、无框线嵌套表属于难例，产出须标注置信度供人工复核。
+6. **零联网**：推理全在本地 ONNX，不产生搜索/API 费用；本插件不做任何联网调用。
+7. 详细用法、档位与加速参数见插件 README；领域化的下游流程不在本工具内，由调用方的技能/流水线自行约定。
 
 ## 知识库文件预处理（doc_preprocess）
 
@@ -239,10 +243,10 @@ const PROMPT_SECTION = `## OCR 文档识别（doc_ocr）
 discover → classify → extract → clean → structure → output → verify（含 sha256 增量跳过）。
 
 - 参数 path：文件或目录；outputDir：输出目录（默认 <input>/.preprocessed）。
-- 后端路由：文本层 PDF → pypdf；扫描件 PDF/图片 → RapidOCR；docx → python-docx；xlsx → openpyxl；pptx → python-pptx；csv → markdown 表；json/yaml → 代码块。
+- 后端路由：文本层 PDF → pymupdf；扫描件 PDF/图片 → RapidOCR；docx → python-docx；xlsx → openpyxl；pptx → python-pptx；csv → markdown 表；json/yaml → 代码块。
 - 输出：每文件一个 .md（YAML frontmatter：source_path/sha256/kind/backend/page_count/ocr_confidence/extracted_at）+ .json + cache.json。
 - 模式：all（默认）/ classify（只分类）/ discover（只列文件）；force 忽略缓存重跑。
-- 纪律：原始文件不改；markdown 是工作格式，财务数字另存 JSON；失败进 failed 列表交人工。`
+- 纪律：原始文件不改；markdown 是工作格式，结构化数值另存 JSON；失败进 failed 列表交人工。`
 
 function resolveInputPath(args, exec) {
   let p = args.path
@@ -260,7 +264,7 @@ export function apply(ctx) {
 
   disposers.push(ctx.tools.register(defineTool({
     name: 'doc_ocr',
-    description: 'OCR a scanned PDF or image (no text layer) into structured text. Modes: text (per-page text + confidence), table (financial tables: auto-detect numeric columns, column-slice re-OCR, number cleaning, balance-sheet 勾稽 self-check), clause (deal-term keyword hits), legal (legal-DD keyword scan: warranties/breach/dispute resolution/deadlines/approvals/cross-references/signatures), strategy (strategy-report keyword scan: market size/growth/competition/customers/technology/milestones/risks). All scan modes return hits with page + quote. Engine: RapidOCR running PaddleOCR PP-OCRv4 ONNX models. Read-only; never modifies the source. For complex table-structure / layout parsing, the upgrade reference is PaddleOCR PP-Structure (paddleocr-doc-parsing).',
+    description: 'Scan a PDF or image into structured content (general-purpose document scanning; not tied to any business domain). Modes: text (per-page text + confidence), table (table structure: numeric-column clustering, geometric reconstruction or column-slice re-OCR, number cleaning, self-consistency checks), clause (clause keyword hits), legal (legal-document concern scan), strategy (strategy/industry report keyword scan). All scan modes return hits with page + quote. Engine: RapidOCR running PaddleOCR PP-OCRv6 ONNX models, fully local (no network, no API fees). Read-only; never modifies the source. For advanced table-structure / layout parsing, the upgrade reference is PaddleOCR PP-Structure (paddleocr-doc-parsing).',
     parameters: {
       path: {
         type: 'string',
@@ -270,7 +274,7 @@ export function apply(ctx) {
       mode: {
         type: 'string',
         enum: ['text', 'table', 'clause', 'legal', 'strategy'],
-        description: 'OCR mode. text = whole-page text (default). table = financial table extraction with column slicing + balance-sheet 勾稽. clause = deal-term keyword scan (回购/对赌/反稀释...). legal = legal-DD keyword scan (陈述保证/违约/争议解决/期限窗口/程序审批/交叉引用/签署授权...). strategy = strategy-report keyword scan (市场规模/增长预测/竞争格局/客户订单/技术研发/里程碑/风险...).',
+        description: 'Scan mode. text = whole-page text (default). table = table-structure extraction (numeric-column clustering + geometric reconstruction or column-slice re-OCR + self-consistency checks). clause = clause keyword scan. legal = legal-document concern scan (representations/breach/dispute-resolution/deadlines/approvals/signatures). strategy = strategy-report keyword scan (market size/growth/competition/customers/technology/milestones/risks).',
       },
       pages: {
         type: 'string',
@@ -278,7 +282,7 @@ export function apply(ctx) {
       },
       dpi: {
         type: 'integer',
-        description: 'Render DPI before OCR. Default 200 (text/clause), 300 (table). Higher DPI (300-400) improves small-number accuracy on scanned financial tables.',
+        description: 'Render DPI before OCR. Default 200 (text/clause), 300 (table). Higher DPI (300-400) improves small-number accuracy on dense numeric tables.',
       },
       lang: {
         type: 'string',

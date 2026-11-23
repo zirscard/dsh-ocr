@@ -4,13 +4,13 @@
 
 【为什么需要（2026-11-14 实测驱动）】
 现有 `table` 模式走「切条重 OCR」：把页面按列边界切成竖条 → 每条单独 OCR → 归行。
-**切条边界会落进数字中间**。实测<项目B> A05-2 审计报告 p6（合并资产负债表）：
+**切条边界会落进数字中间**。实测某 2 列宽表：
 
     label=货币资金  cells=[142338049.42, 67654.0, 174.9]
                               ↑ 67654174.90 被切成 67654.0 + 174.9
 
 根因链（全部实测）：
-  ① `_columns_from_tokens()` **把列数硬编码为 3**（注释写明「已验证口径：FDD p37 三线表」），
+  ① `_columns_from_tokens()` **把列数硬编码为 3**（注释写明「已验证口径：无竖线三线表」），
      而这份 BS 只有 **2 个数值列** ⇒ k-means 强行劈出 3 列 ⇒ 切条边界落进数字中间。
   ② 历史修法失败的原因是 token 跨度用**字符比例估算**（不精确），k=6 时会把 "608,209" 拆成 608/209。
   ③ 但 **RapidOCR 本来就给出每个文本框的精确 bbox**（`run_page` 已输出 x/y/w/h 归一化坐标）
@@ -47,7 +47,7 @@ import re
 CJK = re.compile(r"[一-鿿]")
 
 # 附注引用：形如「(十四)」「七、(一)」「七、」—— 它是**附注列**，不是行标签
-#   （2026-11-14 实测：项目C A05-2 p4 的附注号带项号前缀「七、(一)」）
+#   （2026-11-14 实测：中微达信 A05-2 p4 的附注号带项号前缀「七、(一)」）
 FOOTNOTE_PART = re.compile(r"[（(][一二三四五六七八九十百]+[)）]|[一二三四五六七八九十百]+[、，]")
 
 
@@ -89,16 +89,25 @@ def _boxes(lines):
     return out
 
 
-MIN_TOKENS_PER_COL = 2      # 每列最少 token 数（**唯一阈值**，khlib 侧也用它）
+def _median(xs):
+    """中位数（空列表返回 0.0）。行距自适应等处使用。"""
+    if not xs:
+        return 0.0
+    v = sorted(xs)
+    return v[len(v) // 2]
+
+
+MIN_TOKENS_PER_COL = 2      # 每列最少 token 数（**唯一阈值**，调用方也应用同一个值）
+LABEL_X_WEIGHT = 0.02       # 标签归属成本里横向位置的权重（只用于打破近似平局）
 
 
 def cluster_columns(num_boxes, min_gap=0.018, min_tokens=MIN_TOKENS_PER_COL):
     """数值框 → 列簇，并剔除**伪列**（token 数不足的列）→ (cols, pseudo)。
 
-    ★ 2026-11-15 评审修正：此前 khlib 的 `parse_classify` **复制**了一份聚类，
-      且「每列最少 token 数」阈值不同（khlib ≥3 / 此处 ≥2）⇒ 同一页两侧给出
-      **相反**的分栏结论（实测：插件判双栏、khlib 判单栏）。
-      ⇒ 现在只有这一份实现、这一个阈值；khlib 侧直接调用本函数。
+    ★ 2026-11-15 评审修正：调用方曾**复制**了一份同样功能的聚类，且
+      「每列最少 token 数」阈值不同（调用方 ≥3 / 此处 ≥2）⇒ 同一页两侧给出
+      **相反**的分栏结论（实测：一侧判双栏、另一侧判单栏）。
+      ⇒ 判据只保留这一份实现、这一个阈值；调用方应直接调用本函数，不要复制。
     """
     cols = _cluster_columns(num_boxes, min_gap=min_gap)
     keep, pseudo = [], []
@@ -170,8 +179,8 @@ def detect_panels(cols, min_cols_per_side=2):
          [0.12,0.14,0.29] vs right 间隙 [0.12,0.28,0.15]）。
       ② 在**最大间隙**处切分，要求**两侧各有 ≥min_cols_per_side 个列簇**
          —— 这是主判据，实测 5 样本全对：
-           <项目A> p37（双栏）左3|右3 ✅｜FDD p37 左3|右1 ✗单栏 ✅
-           FDD p20 左1|右3 ✗单栏 ✅｜FDD p12 左1|右2 ✗单栏 ✅｜审计 p6 左1|右1 ✗单栏 ✅
+           双栏样本（双栏）左3|右3 ✅｜单栏样本A 左3|右1 ✗单栏 ✅
+           单栏样本B 左1|右3 ✗单栏 ✅｜单栏样本C 左1|右2 ✗单栏 ✅｜单栏样本D 左1|右1 ✗单栏 ✅
       ③ 加强条件：组间间隙须 > 组内**最大**间隙 ×1.2
          （用中位数×2.5 会漏判「栏内列距大」的真双栏：
           真双栏 0.10/0.25 | 0.60/0.80 ⇒ 0.35 vs 中位 0.20 ⇒ 被误判单栏）
@@ -250,17 +259,17 @@ def reconstruct(lines, clean_number, num_re=None):
     # ── 分栏（双栏表：左资产 / 右负债权益）──
     #   ★ 2026-11-15 判据重写。原来用「**标签 x 的最大间隙** > 0.18」判双栏，
     #     实测**两个方向都错**：
-    #       · 漏判：<项目A> FDD p37 是双栏 BS（6 个数值列，左3|右3），
+    #       · 漏判：某双栏表 6 个数值列（左3|右3），
     #         但标签 x 间隙只有 0.1441 < 0.18 ⇒ 没分栏 ⇒ 左右栏混在一张表里
     #         ⇒ 资产总计与负债合计对不上（勾稽全毁）。
-    #       · 误判：FDD 股权结构表首列是**序号**（孤立在 x≈0.17），
+    #       · 误判：带序号列的明细表，序号列孤立在 x≈0.17，
     #         其与右侧数值列的间隙高达 0.47~0.50，**比真双栏的 0.44 还大**
     #         ⇒ 用间隙判双栏会把单栏表误劈成两栏。
     #   ⇒ 改用「**有效数值列簇**」判据：按右缘间隙聚出列簇（已剔除伪列），
     #     在**最大间隙**处切分，要求**两侧各有 ≥2 个列簇**。
     #     实测 5 个样本全部判对：
-    #       <项目A> p37（双栏）左3|右3 ✅｜FDD p37 左3|右1 ✗单栏 ✅
-    #       FDD p20 左1|右3 ✗单栏 ✅｜FDD p12 左1|右2 ✗单栏 ✅｜审计 p6 左1|右1 ✗单栏 ✅
+    #       双栏样本 左3|右3 ✅｜单栏样本A 左3|右1 ✗单栏 ✅
+    #       单栏样本B 左1|右3 ✗单栏 ✅｜单栏样本C 左1|右2 ✗单栏 ✅｜单栏样本D 左1|右1 ✗单栏 ✅
     split_at, panel_ev = detect_panels(cols)
     if split_at is None:
         panels = [{"cols": cols, "side": 0}]
@@ -288,7 +297,7 @@ def reconstruct(lines, clean_number, num_re=None):
                 continue
             # 标签必须在本栏数值块的**水平跨度内**（左于最后一个数值列）。
             #   ★ 2026-11-15 修正：原判据是「左于**第一个**数值列」，那假设了
-            #     **标签列是首列**。但 FDD 股权结构表首列是**序号**（1、2、3…）：
+            #     **标签列是首列**。但带序号列的明细表首列是**序号**（1、2、3…）：
             #       | 1 | 黄早红 | 3,044.5000 | 34.38% |
             #     ⇒ 标签（黄早红）落在第 2 列，被原判据整列排除 ⇒ **整行丢失**
             #       （实测 p20：几何重建返回 0 行，而该页实际有 24 行）。
@@ -297,86 +306,65 @@ def reconstruct(lines, clean_number, num_re=None):
             if b["x0"] >= pcols[-1]["left"] - 0.02:
                 continue
             panel_labels.append(b)
-        # 逻辑行
+        # ── 逻辑行 + 标签归属（**一个成本函数 + 全局一对一贪心**，唯一判据）──────
+        #   ★ 2026-11-24 重写。原实现堆了三层启发式（区间重叠 → 顶边过滤 → 取最左
+        #     → 向上链路兜底），每层都为修某个具体样本而加，互相打架：
+        #     同一行标签的顶边只要比数值顶边低 0.004 以上就被判成「下一行的标签」
+        #     ⇒ **标签整体错位一行**（实测合成表：「资产总计」拿到「负债合计」的数字，
+        #     「负债合计」整行丢失、表内一致性校验为空）。
+        #     而这两种情形在真实数据上本就不可分（本行标签 +0.0087 vs 下一行 +0.0081）。
+        #   ⇒ 改成一个成本函数：
+        #       cost = |标签中心y − 数值行中心y| + x0 × LABEL_X_WEIGHT
+        #     纵向距离主导（决定属于哪一行）；横向权重很小，只打破近似平局
+        #     （同一视觉行里既有行标签又有中间说明列时，取更靠左的）。
+        #     再套**全局一对一贪心**：一个标签只服务一行、一行只用一个标签。
         groups = _group_numeric_rows(pcols)
-        rows_out = []
-        used_groups = []          # 已占用的数值行（用于区分「上一行的标签」与「本行的标签」）
+        gmet = []
         for grp in groups:
+            gy0 = min(t["y0"] for _j, t in grp["members"])
+            gy1 = max(t["y1"] for _j, t in grp["members"])
+            gmet.append({"y0": gy0, "y1": gy1, "yc": (gy0 + gy1) / 2.0})
+        # 周期自适应容差：一个行距以内都算「本行候选」
+        _pitch = _median([gmet[k + 1]["yc"] - gmet[k]["yc"]
+                          for k in range(len(gmet) - 1)]) if len(gmet) > 1 else 0.0
+        max_dy = max(0.014, _pitch * 0.9) if _pitch else 0.02
+        pairs = []
+        for gi, gm in enumerate(gmet):
+            for b in panel_labels:
+                dy = abs(b["yc"] - gm["yc"])
+                if dy > max_dy:
+                    continue                       # 太远 ⇒ 不可能是本行标签
+                pairs.append((dy + b["x0"] * LABEL_X_WEIGHT, gi, b))
+        pairs.sort(key=lambda z: z[0])
+        lab_of = {}
+        used_label = set()
+        for _cost, gi, b in pairs:
+            if gi in lab_of or id(b) in used_label:
+                continue
+            lab_of[gi] = b
+            used_label.add(id(b))
+        rows_out = []
+        for gi, grp in enumerate(groups):
             cells = [None] * len(pcols)
             for j, t in grp["members"]:
                 if cells[j] is None:
                     cells[j] = t["v"]
                 else:
-                    # 同一格有第二个数 ⇒ **逻辑行聚类把相邻两行合并了**
-                    #   （容差偏大）。这不是「丢数」（第一个值已保留），
-                    #   而是「行被合并」的信号 → 记为**行合并**噪声，不算孤儿值。
+                    # 同一格有第二个数 ⇒ **逻辑行聚类把相邻两行合并了**（容差偏大）。
+                    # 不是丢数（第一个值已保留），记为「行合并」噪声，不算孤儿值。
                     merged_rows.append({"text": t["text"], "v": t["v"],
                                         "x": round(t["cx"], 4), "y": round(t["y0"], 4),
                                         "reason": "同一格重复取值（逻辑行合并）"})
             if not any(v is not None for v in cells):
                 continue
-            # 归标签：**纵向区间重叠**判据（不是「最近」！）
-            #   实测 A05-2 p6：「货币资金」标签 y=0.1588~0.1744，
-            #   同一行数值 142,338,049.42 y=0.1658~0.1804 ⇒ **重叠 0.0086**。
-            #   下一行的标签（结算备付金 y=0.1739~）与本组数值**也**重叠一点，
-            #   但重叠量更小 ⇒ 取**重叠量最大**者，而不是「中心差最小」。
-            gy0 = min(t["y0"] for _j, t in grp["members"])
-            gy1 = max(t["y1"] for _j, t in grp["members"])
-            best = None
-            for b in panel_labels:
-                ov = min(b["y1"], gy1) - max(b["y0"], gy0)
-                if ov <= 0:
-                    continue
-                # ★ 排除「**下一行**」的标签：它的顶边晚于本行数值的顶边。
-                #   （实测 A05-2 p6 第 1 行：候选有两个，x 几乎相同——
-                #     「结算备付金」x0=0.1854、y0=0.1739（**下一行**的标签，OCR 误识别）
-                #     「货币资金」  x0=0.1861、y0=0.1588（本行标签）
-                #     只按 x 取最左会选错 ⇒ 必须叠加「标签顶 ≤ 数值顶」。)
-                if b["y0"] > gy0 + 0.004:
-                    continue
-                # 同一行的多个候选里取**最左**的：
-                #   序号列是数字（本就不在 label_boxes 里）；
-                #   表中间的说明列（如「货币」「持股比例」）更靠右 ⇒ 不会抢走行标签。
-                #   （实测 FDD p12：候选 [黄早红(x=0.13), 货币(x=0.60)] ⇒ 取黄早红。）
-                if best is None or b["x0"] < best[1]["x0"]:
-                    best = (ov, b)
-            if best is not None:
-                lb = best[1]
-            else:
-                # 向上最近：**从本行往上**找第一个「本栏尚无值」的标签行。
-                #   （实测 A05-3 p11：「营业收入」标签区间与其数值区间**不重叠**
-                #     —— OCR 把标签放在更高的 y 带；「减：营业成本」却在下一行。
-                #     哪个是真标签？⇒ 靠「本栏已占用的行」来区分：
-                #     真正的行标签是**本行自己的**，而下一行的标签已被下一行的数占用。
-                #     故取「向上第一个、且其下方到本组之间没有其他已占用的数值行」的标签。）
-                # 向上找标签：取**上方最近**、且**其下方到本组之间没有别的数值行**的标签。
-                #   （实测 A05-3 p11 母公司利润表：「营业收入」标签与本组数值**不重叠**
-                #     ——OCR 把标签放进了更高的 y 带；「减：营业成本」在下一行且与本组重叠更多，
-                #     故重叠判据会选错。此时靠「中间无别的数值行」区分：
-                #     真正的行标签下方不该再夹着另一个数值行。）
-                above = [b for b in panel_labels if b["y1"] <= gy0 + 0.002]
-                lb = None
-                if above:
-                    above.sort(key=lambda b: b["y0"], reverse=True)
-                    for b in above:
-                        between = [g2 for g2 in used_groups
-                                   if g2["y0"] < gy0 - 0.002 and g2["y1"] > b["y1"] + 0.001]
-                        if between:
-                            continue          # 中间夹着别的数值行 ⇒ 不是本组的标签
-                        lb = b
-                        break
-                if lb is None:
-                    above2 = [b for b in panel_labels if b["y1"] <= gy0 + 0.002]
-                    lb = max(above2, key=lambda b: b["y0"]) if above2 else None
-                if lb is None:
-                    orphans.append({"text": "|".join(t["text"] for _j, t in grp["members"])[:40],
-                                    "v": None, "x": round(grp["members"][0][1]["cx"], 4),
-                                    "y": round(gy0, 4), "reason": "数值行无科目名"})
-                    continue
-            used_groups.append({"y0": gy0, "y1": gy1})
-            rows_out.append({"label": lb["text"], "cells": cells, "y": gy0,
-                             "x": lb["x0"], "panel": pi,
-                             "has_value": True})
+            lb = lab_of.get(gi)
+            if lb is None:
+                orphans.append({"text": "|".join(t["text"] for _j, t in grp["members"])[:40],
+                                "v": None, "x": round(grp["members"][0][1]["cx"], 4),
+                                "y": round(gmet[gi]["y0"], 4), "reason": "数值行无科目名"})
+                continue
+            rows_out.append({"label": lb["text"], "cells": cells, "y": gmet[gi]["y0"],
+                             "x": lb["x0"], "panel": pi, "has_value": True})
         # 列名（表头）：首个数值行之上、x 与该列重叠
         names = []
         for c in pcols:

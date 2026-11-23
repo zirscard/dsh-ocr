@@ -35,7 +35,7 @@ import time
 from datetime import datetime
 
 # ---------------------------------------------------------------------------
-# 数字清洗（逗号/句点混淆、千分位、括号负数）—— 移植自数据底表 FDD 抽取
+# 数字清洗（逗号/句点混淆、千分位、括号负数）—— 移植自表格抽取实践
 # ---------------------------------------------------------------------------
 NUM_RE = re.compile(r"[（(]?\s*[-\u2212]?\s*\d[\d,，.．]*\d?\s*[)）]?")
 
@@ -140,8 +140,8 @@ def _ocr_model_version():
     """当前 OCR 权重版本：DSH_OCR_MODEL=v4|v5|v6。
 
     默认 v6（PP-OCRv6，50 语种统一模型）——2026-10-28 验收：
-      · <项目A> FDD p37 真值回归 15/15，BS 勾稽 3/3（608209/486041/831229 与 M1 底稿一致）；
-      · 星环审计报告 p6 标签碎片 0（原为 '营/采/减：'），资产总计读数正确；
+      · 真实双栏表格真值回归 15/15，两期一致性校验 3/3（608209/486041/831229）；
+      · 某扫描表格页标签碎片 0（原为 '营/采/减：'），合计行读数正确；
       · v4 保留为回滚档（DSH_OCR_MODEL=v4），两者在真值集上结果一致。
     """
     v = (os.environ.get("DSH_OCR_MODEL") or "v6").strip().lower()
@@ -306,7 +306,7 @@ def page_text(lines):
 # ---------------------------------------------------------------------------
 # 模式：text / clause / legal / strategy / table
 # ---------------------------------------------------------------------------
-# 交易/投资条款（原 clause 模式口径）
+# 条款类关键词（clause 模式）
 CLAUSE_PATTERNS = {
     "回购": r"回购",
     "对赌/业绩承诺": r"对赌|业绩承诺|业绩补偿|估值调整",
@@ -317,7 +317,7 @@ CLAUSE_PATTERNS = {
     "一票否决/特别表决": r"一票否决|特别表决|一致同意",
 }
 
-# 法律尽调扫描（legal 模式）：主体/程序/责任/争议/期限/签署等尽调关注点
+# 法律类文档扫描（legal 模式）：主体/程序/责任/争议/期限/签署等关注点
 # 条款分类对齐 CUAD（Contract Understanding Atticus Dataset）41 类，按中文合同语境映射
 LEGAL_PATTERNS = {
     "陈述与保证": r"陈述与保证|陈述保证|真实、准确|真实性和完整性",
@@ -550,7 +550,7 @@ def balance_check(rows, panel=None):
 
     这是财务三表里最可泛化、最硬的一条自校验：三个总数是从 OCR 里独立读出来的，
     若两边对得上，说明列对齐与数字清洗整体可信；对不上则标出差异交给下游人工核对。
-    用锚定精确匹配（^…$），避免「流动资产合计」被「资产合计」子串误配（M1 实测踩过的坑）。
+    用锚定精确匹配（^…$），避免「流动资产合计」被「资产合计」子串误配（实测踩过的坑）。
 
     panel=None：跨面板匹配（双栏 BS：资产总计在左栏，负债/权益在右栏）。
     panel=k：只在第 k 个面板内匹配（单栏表）。
@@ -620,10 +620,10 @@ def _columns_from_tokens(tokens, k=None):
 
     k=None 时按「每簇样本≥3 且簇内跨度窄」自动选列数（2..6）：
     数字右对齐 → 真列的 token 跨度窄；k 过小会把两列并成一簇（跨度变宽），
-    k 过大则出现空簇/碎簇。FDD p37 = 3 列、星环资产栏 = 2 列，都由此自适应。
+    k 过大则出现空簇/碎簇。3 列窄表与 2 列宽表都由此自适应。
     """
     xs = [t[0] for t in tokens]
-    # 列数固定 3（已验证口径：FDD p37 三线表 期末/期初 3 列）。
+    # 列数固定 3（已验证口径：无竖线三线表 3 列）。
     # 曾尝试按「簇内跨度」自动选 k，但 token 跨度是字符比例估算（不精确），
     # 会在 k=6 时把一个数字拆成多段（"608,209" → 608/209），2026-10-28 实测失败。
     k = k if k and 0 < k <= 6 else 3
@@ -652,9 +652,9 @@ def _geo_module():
     """加载同目录的 geo_table（**模块级缓存**：此前每页 exec_module 一次，纯开销）。
 
     按**同目录绝对路径**加载：core 可能被 importlib 从绝对路径加载
-    （khlib.ocr_api._load_plugin_core 的做法），此时 sys.path 里**没有 core/**
+    （宿主按绝对路径加载 core 的做法），此时 sys.path 里**没有 core/**
     ⇒ 直接 `from geo_table import ...` 会静默失败并悄悄退回切条法
-    （2026-11-14 实测：khlib 路径下几何法未生效，数字又被切碎）。
+    （2026-11-14 实测：按绝对路径加载时几何法未生效，数字又被切碎）。
     """
     global _GEO_MOD, _GEO_TRIED
     if _GEO_TRIED:
@@ -709,7 +709,7 @@ def _coord_source(whole):
     """这批坐标的来源：'text_layer'（精确、零 OCR 成本）| 'ocr'（扫描件）。
 
     判别依据：RapidOCR 的 `run_page` 产出的 lines **无 `source` 键**
-    （只有 x/y/w/h/text/conf）；而 khlib/text_layer_bbox.py 产出的词级坐标
+    （只有 x/y/w/h/text/conf）；而文本层词级坐标（由调用方提供）
     带 `source="text_layer"` ⇒ 精确判别，不靠猜。
     """
     for l in (whole or [])[:8]:
@@ -729,8 +729,8 @@ def table_extract(engine, img, whole=None):
     2026-10-28 升级：
       · 行重建 v3（整页标签 + 数值唯一分配）→ 修「应收票据抓到交易性金融资产」行错位；
       · 数值 token 跨度口径 + 唯一最近中心归属 → 修 v6 下相邻列串列；
-      · **先分栏再定列** → 支持审计报告双栏 BS（左资产 / 右负债权益），
-        且不把 FDD p37 右侧「客户集中度」小表混进 BS 列（已验证口径不变）。
+      · **先分栏再定列** → 支持双栏表（左/右两栏各自成列），
+        且不把右栏的独立小表混进主表列（已验证口径不变）。
 
     2026-11-15 提速（实测 p6 单页 5.50s → 1.30s）：
       · **几何前置早退**：几何重建只复用整页 OCR 的行（0 次额外 OCR，实测 0.00s），
@@ -741,7 +741,7 @@ def table_extract(engine, img, whole=None):
     whole = whole if whole is not None else run_page(engine, img)
     tokens = _numeric_token_x(whole)
     if len(tokens) < 4:
-        # 几何兜底：整页 OCR 数值 token 少但版面可能有表（如审计报告宽表）
+        # 几何兜底：整页 OCR 数值 token 少但版面可能有表（如宽表）
         geo = _table_extract_geo(engine, img, whole)
         if geo.get("ok"):
             return geo
@@ -767,8 +767,8 @@ def table_extract(engine, img, whole=None):
     #
     #   ★ 为什么「扫描件 + 双栏」必须走切条（2026-11-15 实测）：
     #     几何法**已能分栏**（detect_panels 判据：最大间隙处切分且两侧各 ≥2 个列簇，
-    #     5 个样本全判对；旧判据用标签间隙，既漏判<项目A>双栏 BS、又把序号列误当分栏），
-    #     但**双栏 BS 的几何重建仍有多余行**（实测<项目A> p37 出现负值重复行）⇒ 未验证 ⇒ 保持切条。
+    #     5 个样本全判对；旧判据用标签间隙，既漏判双栏表、又把序号列误当分栏），
+    #     但**双栏表的几何重建仍有多余行**（实测出现负值重复行）⇒ 未验证 ⇒ 保持切条。
     geo = _table_extract_geo(engine, img, whole)
     geo_cols = len(geo.get("column_list") or []) if geo.get("ok") else 0
     panels_n = int(geo.get("panel_count") or 1) if geo.get("ok") else 1
@@ -790,7 +790,7 @@ def table_extract(engine, img, whole=None):
             # ↓ 继续走切条法（下面的代码）
         elif geo_cols != 3:
             # 单栏且列数 ≠ 3 ⇒ 切条法**必然切碎数字**（它只支持 3 列）⇒ 几何。
-            #   2 列（审计报告合并 BS）与 ≥4 列（多年度明细表）都归到这里。
+            #   2 列宽表与 ≥4 列明细表都归到这里。
             route.update(decision="geometry",
                          reason="单栏 %d 列：切条法列数硬编码 3 会切碎数字，改用几何重建"
                                 % geo_cols)
@@ -804,8 +804,8 @@ def table_extract(engine, img, whole=None):
         # ★ 保留 geo 的**具体**失败原因（审计链不丢关键一环）
         _gr = geo.get("reason") or "几何重建不可用"
         route.update(decision="slice", reason="几何重建不可用（%s）⇒ 切条法" % _gr)
-    # ① 按 x 空白带把页面切成栏区（审计报告双栏 BS：左资产 x<0.45 / 右负债权益 x>0.5）
-    # ① 分栏：**唯一判据来源 = 几何法的 `detect_panels`**（`geo_table`，与 khlib 分类器共用）
+    # ① 按 x 空白带把页面切成栏区（双栏表：左栏 / 右栏）
+    # ① 分栏：**唯一判据来源 = 几何法的 `detect_panels`**（`geo_table`；调用方也应用同一判据）
     #   ★ 2026-11-15 评审修正：此前切条路径**自带一套**分栏判据
     #     （token x 间隙 >0.25 + 每侧 ≥8 token），与 `geo_table.detect_panels`
     #     （右缘间隙 + 每侧 ≥2 列簇）**并存且互不引用** ⇒ 两套可给出相反结论：
@@ -846,7 +846,7 @@ def table_extract(engine, img, whole=None):
                 "route": {"decision": "slice", "reason": "切条法未解析出表格行",
                           "coord_source": _coord_source(whole)}}
     # 注：几何重建的早退已在函数入口处完成（`geo==2` 直接返回，省掉切条 OCR）；
-    #     走到这里的都是「几何没算出 2 列」的页（如 3 列窄表 FDD p37），继续按切条法口径产出。
+    #     走到这里的都是「几何没算出 2 列」的页（如 3 列窄表），继续按切条法口径产出。
     # 勾稽：单栏 → 栏内勾稽；多栏 → 跨栏勾稽（资产在左栏、负债/权益在右栏）
     if len(panel_info) <= 1:
         all_checks = [dict(c, panel=0) for c in balance_check(all_rows)]
@@ -894,7 +894,7 @@ def main():
     ap.add_argument("--dpi", type=int, default=200)
     ap.add_argument("--mode", default="text",
                     choices=["text", "table", "clause", "legal", "strategy"],
-                    help="text=整页文本；table=财务表格；clause=交易条款；legal=法律尽调扫描；strategy=战略报告扫描")
+                    help="text=整页文本；table=表格结构；clause=条款关键词；legal=法律类文档扫描；strategy=战略/行业报告扫描")
     ap.add_argument("--lang", default="ch")
     ap.add_argument("--out-json")
     ap.add_argument("--out-md")

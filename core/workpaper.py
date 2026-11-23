@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""dsh-ocr · 审计/底稿索引生成器（workpaper index）
+"""dsh-ocr · 文档证据索引生成器（workpaper index）
 
-把 doc_ocr / doc_preprocess 的 JSON 产物，转成「报告底稿一对一」的带地址索引：
+把 doc_ocr / doc_preprocess 的 JSON 产物，转成「结论 ↔ 证据一对一」的带地址索引：
 每个证据片段（文本页 / 表格行 / 条款命中）都有稳定地址，回答必须引用地址，
-找不到证据就标 missing 待查 —— 这是审计底稿 RAG 的纪律（参考 vestigium 的
+找不到证据就标 missing 待查 —— 这是证据链 RAG 的纪律（参考 vestigium 的
 页地址协议与 financial-report-rag 的表格行级 chunk）。
 
 地址协议（address）：
@@ -222,7 +222,7 @@ def write_outputs(entries, records, out_dir, title):
         for e in entries:
             f.write(json.dumps(e, ensure_ascii=False) + "\n")
 
-    # 跨页 BS 勾稽（场景 B：审计报告 BS 常跨页，单页 balance_check 常为 0/0）
+    # 跨页一致性校验（表格常跨页，单页校验常为 0/0）
     # 聚合同一文档全部 table_row 再跑一次 balance_check，结果写进 MD 头部。
     from ocr import balance_check
     cross_checks = []
@@ -318,10 +318,10 @@ def _fmt(v):
 
 # ---------------------------------------------------------------------------
 def main():
-    ap = argparse.ArgumentParser(description="审计/底稿索引生成器（带地址证据）")
+    ap = argparse.ArgumentParser(description="文档证据索引生成器（带地址证据）")
     ap.add_argument("--input", required=True, help="JSON 文件或目录（engine / pipeline 产物）")
     ap.add_argument("--output", required=True, help="索引输出目录")
-    ap.add_argument("--title", default="底稿索引（workpaper index）")
+    ap.add_argument("--title", default="证据索引（workpaper index）")
     args = ap.parse_args()
 
     if not os.path.exists(args.input):

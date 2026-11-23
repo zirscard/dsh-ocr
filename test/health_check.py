@@ -25,8 +25,35 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
 PY_DEFAULT = os.path.expanduser(
     "~/.dsh/dsh-runtimes/dsh-primary-runtime/dependencies/python/bin/python3")
-PROFILE_PKG = os.path.expanduser("~/.dsh/profiles/desktop/package.json")
-CONTRACT = os.path.expanduser("<materials-root>/m3/ocr/pages/<contract-page>.png")
+# 当前 DSH profile 的 package.json（可用 DSH_OCR_PROFILE_PKG 覆盖；探测不到则跳过该组检查）
+PROFILE_PKG = os.environ.get("DSH_OCR_PROFILE_PKG") or os.path.expanduser(
+    "~/.dsh/profiles/%s/package.json" % os.environ.get("DSH_PROFILE", "desktop"))
+# 冒烟用的图：**现画**（不依赖任何私有材料）
+SMOKE_PNG = os.path.join(HERE, ".smoke.png")
+
+
+def _make_smoke_png(path):
+    """画一张已知文本的图，供 E 项冒烟用。失败返回 False（缺少 PIL 时跳过）。"""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:                              # noqa: BLE001
+        return False
+    font = None
+    for fp in ("/System/Library/Fonts/STHeiti Medium.ttc",
+               "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+               "C:/Windows/Fonts/msyh.ttc"):
+        if os.path.exists(fp):
+            try:
+                font = ImageFont.truetype(fp, 40)
+                break
+            except Exception:                      # noqa: BLE001
+                continue
+    if font is None:
+        font = ImageFont.load_default()
+    img = Image.new("RGB", (900, 160), "white")
+    ImageDraw.Draw(img).text((30, 40), "合计金额 52,163 元", fill="black", font=font)
+    img.save(path)
+    return True
 
 PASS, FAIL = [], []
 
@@ -87,22 +114,29 @@ def main():
               fix='plugin_manager install_bundle(target=插件目录)；若报 already-installed，先 remove_bundle 再 install_bundle，然后重启 DSH')
         check("dependencies 含 dsh-macos-signfix", "dsh-macos-signfix" in deps)
         check("bundles 含 dsh-macos-signfix", "dsh-macos-signfix" in bundles)
-    except Exception as e:
-        check("profile package.json 可读", False, str(e))
+    except Exception as e:                         # noqa: BLE001
+        print("  ⏭  SKIP profile 注册检查（读不到 %s：%s）" % (PROFILE_PKG, str(e)[:60]))
 
-    print("\n# E. 冒烟（text 模式）")
-    if os.path.exists(CONTRACT):
-        r = run([py, os.path.join(PLUGIN, "core", "ocr.py"),
-                 "--input", CONTRACT, "--mode", "text", "--dpi", "200"], timeout=120)
+    print("\n# E. 冒烟（text 模式，用现画的合成图）")
+    if _make_smoke_png(SMOKE_PNG):
         try:
+            r = run([py, os.path.join(PLUGIN, "core", "ocr.py"),
+                     "--input", SMOKE_PNG, "--mode", "text", "--dpi", "200"], timeout=120)
             d = json.loads(r.stdout)
             p = d["pages"][0]
             check("引擎 ok", d.get("ok") is True)
             check("conf ≥ 0.9", (p.get("avg_conf") or 0) >= 0.9, "conf=%s" % p.get("avg_conf"))
-        except Exception:
-            check("引擎 ok", False, (r.stdout + r.stderr)[-160:])
+            check("读到已知文本", "52,163" in (p.get("text") or "") or "52163" in (p.get("text") or ""),
+                  (p.get("text") or "")[:40])
+        except Exception:                          # noqa: BLE001
+            check("引擎 ok", False, (r.stdout + r.stderr)[-160:] if 'r' in dir() else "")
+        finally:
+            try:
+                os.remove(SMOKE_PNG)
+            except Exception:                      # noqa: BLE001
+                pass
     else:
-        check("合同页存在", False, CONTRACT)
+        check("冒烟图生成", False, "缺 PIL —— 检查解释器依赖")
 
     print("\n# 结果：%d 通过 / %d 失败" % (len(PASS), len(FAIL)))
     if FAIL:
